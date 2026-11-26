@@ -173,13 +173,23 @@ dependencies = [
 
 [[package]]
 name = "trunk-recorder-plugin"
-version = "0.5.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a7504b42cca72ec6457beb7ac279f3a4fbe16054f86be57eb1e28a70dd6394d"
+checksum = "a93ed21c1effdaa9b68c3f152a0821cd9ee8cc9f5fca9ecd342479590b4c697d"
 dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "trunk-plugin-multimon-capture"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "trunk-recorder-plugin",
 ]
 
 [[package]]
@@ -187,16 +197,6 @@ name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
-
-[[package]]
-name = "upload-script"
-version = "0.1.5"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "trunk-recorder-plugin",
-]
 
 [[package]]
 name = "zmij"
