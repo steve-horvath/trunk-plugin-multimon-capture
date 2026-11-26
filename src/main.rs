@@ -27,9 +27,7 @@ struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            output_directory: "raw".into(),
-        }
+        Self { output_directory: "raw".into() }
     }
 }
 
@@ -55,11 +53,7 @@ impl MultimonCapture {
         // create_new avoids overwriting a previous capture if the recorder restarts
         // within the same millisecond or a stream ID is reused.
         for suffix in 0..1000_u32 {
-            let name = if suffix == 0 {
-                stem.clone()
-            } else {
-                format!("{stem}_{suffix}")
-            };
+            let name = if suffix == 0 { stem.clone() } else { format!("{stem}_{suffix}") };
             let raw_path = self.output_dir.join(format!("{name}.raw"));
             let metadata_path = self.output_dir.join(format!("{name}.jsonl"));
 
@@ -69,11 +63,7 @@ impl MultimonCapture {
                 Err(e) => return Err(e),
             };
 
-            let metadata = match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&metadata_path)
-            {
+            let metadata = match OpenOptions::new().write(true).create_new(true).open(&metadata_path) {
                 Ok(file) => file,
                 Err(e) => {
                     let _ = fs::remove_file(&raw_path);
@@ -84,11 +74,7 @@ impl MultimonCapture {
                 }
             };
 
-            let mut captured = CapturedStream {
-                raw: BufWriter::new(raw),
-                metadata: BufWriter::new(metadata),
-                raw_path,
-            };
+            let mut captured = CapturedStream { raw: BufWriter::new(raw), metadata: BufWriter::new(metadata), raw_path };
             let header = json!({
                 "event": "stream_start",
                 "tap": "fm.discriminator",
@@ -107,10 +93,7 @@ impl MultimonCapture {
             return Ok(captured);
         }
 
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not find an unused capture filename",
-        ))
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "could not find an unused capture filename"))
     }
 
     fn write_chunk(&mut self, chunk: TapChunk) {
@@ -120,19 +103,11 @@ impl MultimonCapture {
             }
             match self.open_stream(&chunk) {
                 Ok(stream) => {
-                    self.host.info(format!(
-                        "Capturing {} Hz from {} to {}",
-                        chunk.freq_hz.round(),
-                        chunk.short_name,
-                        stream.raw_path.display()
-                    ));
+                    self.host.info(format!("Capturing {} Hz from {} to {}", chunk.freq_hz.round(), chunk.short_name, stream.raw_path.display()));
                     self.streams.insert(chunk.stream, stream);
                 }
                 Err(e) => {
-                    self.host.error(format!(
-                        "Could not create capture for stream {}: {e}",
-                        chunk.stream
-                    ));
+                    self.host.error(format!("Could not create capture for stream {}: {e}", chunk.stream));
                     return;
                 }
             }
@@ -141,19 +116,13 @@ impl MultimonCapture {
         let result = match self.streams.get_mut(&chunk.stream) {
             Some(stream) => write_chunk_files(stream, &chunk),
             None => {
-                self.host.warn(format!(
-                    "Ignoring chunk {} for stream {} because its first chunk was not received",
-                    chunk.seq, chunk.stream
-                ));
+                self.host.warn(format!("Ignoring chunk {} for stream {} because its first chunk was not received", chunk.seq, chunk.stream));
                 return;
             }
         };
 
         if let Err(e) = result {
-            self.host.error(format!(
-                "Writing stream {} failed: {e}",
-                chunk.stream
-            ));
+            self.host.error(format!("Writing stream {} failed: {e}", chunk.stream));
             if let Some(stream) = self.streams.remove(&chunk.stream) {
                 let _ = finish_stream(stream);
             }
@@ -163,14 +132,8 @@ impl MultimonCapture {
         if chunk.last {
             if let Some(stream) = self.streams.remove(&chunk.stream) {
                 match finish_stream(stream) {
-                    Ok(path) => self.host.info(format!(
-                        "Finished discriminator capture: {}",
-                        path.display()
-                    )),
-                    Err(e) => self.host.error(format!(
-                        "Could not finish stream {}: {e}",
-                        chunk.stream
-                    )),
+                    Ok(path) => self.host.info(format!("Finished discriminator capture: {}", path.display())),
+                    Err(e) => self.host.error(format!("Could not finish stream {}: {e}", chunk.stream)),
                 }
             }
         }
@@ -181,18 +144,12 @@ fn write_chunk_files(stream: &mut CapturedStream, chunk: &TapChunk) -> io::Resul
     let (rate, samples) = match &chunk.data {
         TapData::Pcm { rate, samples } => (*rate, samples),
         other => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("expected PCM samples, received {other:?}"),
-            ));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("expected PCM samples, received {other:?}")));
         }
     };
 
     if rate != SAMPLE_RATE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("expected {SAMPLE_RATE} Hz PCM, received {rate} Hz"),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("expected {SAMPLE_RATE} Hz PCM, received {rate} Hz")));
     }
 
     let mut bytes = Vec::with_capacity(samples.len() * 2);
@@ -236,21 +193,8 @@ fn finish_stream(mut stream: CapturedStream) -> io::Result<PathBuf> {
 }
 
 fn safe_component(value: &str) -> String {
-    let cleaned: String = value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "unknown-system".into()
-    } else {
-        cleaned
-    }
+    let cleaned: String = value.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    if cleaned.is_empty() { "unknown-system".into() } else { cleaned }
 }
 
 impl Plugin for MultimonCapture {
@@ -258,38 +202,18 @@ impl Plugin for MultimonCapture {
     type SystemConfig = NoConfig;
 
     fn manifest() -> Manifest {
-        Manifest {
-            name: "Multimon Capture".into(),
-            subscribe: vec!["tap.fm.discriminator".into()],
-            ..trunk_recorder_plugin::manifest!()
-        }
+        Manifest { name: "Multimon Capture".into(), subscribe: vec!["tap.fm.discriminator".into()], ..trunk_recorder_plugin::manifest!() }
     }
 
     fn start(host: Host, setup: Setup<Config, NoConfig>) -> Result<Self, String> {
         let configured = PathBuf::from(setup.config.output_directory.trim());
-        let output_dir = if configured.is_absolute() {
-            configured
-        } else {
-            setup.data_dir.join(configured)
-        };
+        let output_dir = if configured.is_absolute() { configured } else { setup.data_dir.join(configured) };
 
-        fs::create_dir_all(&output_dir).map_err(|e| {
-            format!(
-                "could not create output directory {}: {e}",
-                output_dir.display()
-            )
-        })?;
+        fs::create_dir_all(&output_dir).map_err(|e| format!("could not create output directory {}: {e}", output_dir.display()))?;
 
-        host.info(format!(
-            "Saving all FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}",
-            output_dir.display()
-        ));
+        host.info(format!("Saving all FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}", output_dir.display()));
 
-        Ok(Self {
-            host,
-            output_dir,
-            streams: HashMap::new(),
-        })
+        Ok(Self { host, output_dir, streams: HashMap::new() })
     }
 
     fn tap(&mut self, chunk: TapChunk) {
@@ -301,10 +225,7 @@ impl Plugin for MultimonCapture {
     fn shutdown(&mut self, _grace: std::time::Duration) {
         for (id, stream) in self.streams.drain() {
             match finish_stream(stream) {
-                Ok(path) => self.host.info(format!(
-                    "Closed unfinished stream {id}: {}",
-                    path.display()
-                )),
+                Ok(path) => self.host.info(format!("Closed unfinished stream {id}: {}", path.display())),
                 Err(e) => self.host.error(format!("Could not close stream {id}: {e}")),
             }
         }
