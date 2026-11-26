@@ -1,4 +1,5 @@
 {
-  "config": { "script": "/home/pi/bin/encode-upload.sh", "timeoutSeconds": 300 },
-  "systems": { "county": { "script": "/home/pi/bin/upload-county.sh --dest 'county archive'" } }
+  "config": {
+    "outputDirectory": "/home/steve/HALTON/pocsag/raw"
+  }
 }
