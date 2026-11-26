@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use schemars::JsonSchema;
