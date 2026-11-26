@@ -1,263 +1,328 @@
-//! Upload script — a Trunk Recorder Pro plugin that runs a script of yours on
-//! each recorded call, as Trunk Recorder's `uploadScript` does: the script
-//! gets the call's WAV, JSON and M4A paths, in that order, after any
-//! arguments of its own.
+//! Captures every FM discriminator tap as raw S16LE PCM, one file per transmission.
 
-mod script;
-
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    fs::{self, File, OpenOptions},
+    io::{self, BufWriter, Write},
+    path::{Path, PathBuf},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use trunk_recorder_plugin::{Attempt, CallQueue, ConcludedCall, Host, Manifest, Plugin, QueueOptions, Setup, format, topic};
+use serde_json::json;
+use trunk_recorder_plugin::{Host, Manifest, NoConfig, Plugin, Setup, Tap, TapChunk, TapData};
 
-use script::Script;
+const SAMPLE_RATE: u32 = 22_050;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
 struct Config {
-    /// Script
+    /// Output directory
     ///
-    /// What to run for each call: the full path of a script or program, then any arguments of your own. It's given three more: the call's WAV, its JSON and its M4A. Systems with a script of their own run that instead.
-    #[serde(alias = "uploadScript")]
-    script: String,
-    /// Time limit (seconds)
-    ///
-    /// A run that takes longer is stopped, and counts as failed.
-    #[schemars(range(min = 1, max = 3600))]
-    timeout_seconds: u32,
+    /// Where captured transmissions are written. An absolute path is used as-is;
+    /// a relative path is resolved under this plugin's persistent data directory.
+    /// The default is the plugin's own data directory/raw.
+    output_directory: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { script: String::new(), timeout_seconds: 300 }
+        Self {
+            output_directory: "raw".into(),
+        }
     }
 }
 
-#[derive(Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "camelCase", default)]
-struct SystemConfig {
-    /// Script
-    ///
-    /// This system's own script, instead of the one above.
-    #[serde(alias = "uploadScript")]
-    script: String,
+struct CapturedStream {
+    raw: BufWriter<File>,
+    metadata: BufWriter<File>,
+    raw_path: PathBuf,
 }
 
-struct UploadScript {
-    queue: CallQueue,
+struct MultimonCapture {
+    host: Host,
+    output_dir: PathBuf,
+    streams: HashMap<u64, CapturedStream>,
 }
 
-impl Plugin for UploadScript {
+impl MultimonCapture {
+    fn open_stream(&self, chunk: &TapChunk) -> io::Result<CapturedStream> {
+        let system = safe_component(&chunk.short_name);
+        let frequency = chunk.freq_hz.round().max(0.0) as u64;
+        let timestamp_ms = (chunk.time * 1000.0).max(0.0) as u64;
+        let stem = format!("{system}_{frequency}Hz_{timestamp_ms}_stream{}", chunk.stream);
+
+        // create_new avoids overwriting a previous capture if the recorder restarts
+        // within the same millisecond or a stream ID is reused.
+        for suffix in 0..1000_u32 {
+            let name = if suffix == 0 {
+                stem.clone()
+            } else {
+                format!("{stem}_{suffix}")
+            };
+            let raw_path = self.output_dir.join(format!("{name}.raw"));
+            let metadata_path = self.output_dir.join(format!("{name}.jsonl"));
+
+            let raw = match OpenOptions::new().write(true).create_new(true).open(&raw_path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+
+            let metadata = match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&metadata_path)
+            {
+                Ok(file) => file,
+                Err(e) => {
+                    let _ = fs::remove_file(&raw_path);
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+
+            let mut captured = CapturedStream {
+                raw: BufWriter::new(raw),
+                metadata: BufWriter::new(metadata),
+                raw_path,
+            };
+            let header = json!({
+                "event": "stream_start",
+                "tap": "fm.discriminator",
+                "stream": chunk.stream,
+                "system": chunk.short_name,
+                "system_id": chunk.system_id,
+                "system_index": chunk.system,
+                "frequency_hz": chunk.freq_hz,
+                "slot": chunk.slot,
+                "sample_rate": SAMPLE_RATE,
+                "sample_format": "s16le",
+                "channels": 1,
+                "started_at": chunk.time,
+            });
+            write_json_line(&mut captured.metadata, &header)?;
+            return Ok(captured);
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not find an unused capture filename",
+        ))
+    }
+
+    fn write_chunk(&mut self, chunk: TapChunk) {
+        if chunk.first {
+            if let Some(previous) = self.streams.remove(&chunk.stream) {
+                let _ = finish_stream(previous);
+            }
+            match self.open_stream(&chunk) {
+                Ok(stream) => {
+                    self.host.info(format!(
+                        "Capturing {} Hz from {} to {}",
+                        chunk.freq_hz.round(),
+                        chunk.short_name,
+                        stream.raw_path.display()
+                    ));
+                    self.streams.insert(chunk.stream, stream);
+                }
+                Err(e) => {
+                    self.host.error(format!(
+                        "Could not create capture for stream {}: {e}",
+                        chunk.stream
+                    ));
+                    return;
+                }
+            }
+        }
+
+        let result = match self.streams.get_mut(&chunk.stream) {
+            Some(stream) => write_chunk_files(stream, &chunk),
+            None => {
+                self.host.warn(format!(
+                    "Ignoring chunk {} for stream {} because its first chunk was not received",
+                    chunk.seq, chunk.stream
+                ));
+                return;
+            }
+        };
+
+        if let Err(e) = result {
+            self.host.error(format!(
+                "Writing stream {} failed: {e}",
+                chunk.stream
+            ));
+            if let Some(stream) = self.streams.remove(&chunk.stream) {
+                let _ = finish_stream(stream);
+            }
+            return;
+        }
+
+        if chunk.last {
+            if let Some(stream) = self.streams.remove(&chunk.stream) {
+                match finish_stream(stream) {
+                    Ok(path) => self.host.info(format!(
+                        "Finished discriminator capture: {}",
+                        path.display()
+                    )),
+                    Err(e) => self.host.error(format!(
+                        "Could not finish stream {}: {e}",
+                        chunk.stream
+                    )),
+                }
+            }
+        }
+    }
+}
+
+fn write_chunk_files(stream: &mut CapturedStream, chunk: &TapChunk) -> io::Result<()> {
+    let (rate, samples) = match &chunk.data {
+        TapData::Pcm { rate, samples } => (*rate, samples),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("expected PCM samples, received {other:?}"),
+            ));
+        }
+    };
+
+    if rate != SAMPLE_RATE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected {SAMPLE_RATE} Hz PCM, received {rate} Hz"),
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    stream.raw.write_all(&bytes)?;
+
+    let record = json!({
+        "event": "chunk",
+        "stream": chunk.stream,
+        "sequence": chunk.seq,
+        "first": chunk.first,
+        "last": chunk.last,
+        "sample_offset": chunk.offset,
+        "sample_count": samples.len(),
+        "sample_rate": rate,
+        "time": chunk.time,
+        "system": chunk.short_name,
+        "system_id": chunk.system_id,
+        "system_index": chunk.system,
+        "frequency_hz": chunk.freq_hz,
+        "slot": chunk.slot,
+        "call_id": chunk.call_id,
+        "talkgroup": chunk.talkgroup,
+        "unit": chunk.unit,
+        "voice_mode": chunk.voice_mode,
+    });
+    write_json_line(&mut stream.metadata, &record)
+}
+
+fn write_json_line(writer: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
+    serde_json::to_writer(&mut *writer, value).map_err(io::Error::other)?;
+    writer.write_all(b"\n")
+}
+
+fn finish_stream(mut stream: CapturedStream) -> io::Result<PathBuf> {
+    stream.raw.flush()?;
+    stream.metadata.flush()?;
+    Ok(stream.raw_path)
+}
+
+fn safe_component(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "unknown-system".into()
+    } else {
+        cleaned
+    }
+}
+
+impl Plugin for MultimonCapture {
     type Config = Config;
-    type SystemConfig = SystemConfig;
+    type SystemConfig = NoConfig;
 
     fn manifest() -> Manifest {
         Manifest {
-            name: "Upload script".into(),
-            subscribe: vec![topic::CALL_CONCLUDED.into()],
-            audio_formats: vec![format::M4A.into()],
+            name: "Multimon Capture".into(),
+            subscribe: vec!["tap.fm.discriminator".into()],
             ..trunk_recorder_plugin::manifest!()
         }
     }
 
-    fn start(host: Host, setup: Setup<Config, SystemConfig>) -> Result<Self, String> {
-        let mut scripts = HashMap::new();
-        for s in &setup.systems {
-            // The system's own script, else the plugin's as it is for this
-            // system (which can override it, and the time limit).
-            let timeout = Duration::from_secs(s.settings.timeout_seconds.clamp(1, 3600) as u64);
-            let own = s.config.as_ref().map_or("", |c| c.script.trim());
-            let line = if own.is_empty() { s.settings.script.trim() } else { own };
-            if line.is_empty() {
-                continue;
+    fn start(host: Host, setup: Setup<Config, NoConfig>) -> Result<Self, String> {
+        let configured = PathBuf::from(setup.config.output_directory.trim());
+        let output_dir = if configured.is_absolute() {
+            configured
+        } else {
+            setup.data_dir.join(configured)
+        };
+
+        fs::create_dir_all(&output_dir).map_err(|e| {
+            format!(
+                "could not create output directory {}: {e}",
+                output_dir.display()
+            )
+        })?;
+
+        host.info(format!(
+            "Saving all FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}",
+            output_dir.display()
+        ));
+
+        Ok(Self {
+            host,
+            output_dir,
+            streams: HashMap::new(),
+        })
+    }
+
+    fn tap(&mut self, chunk: TapChunk) {
+        if chunk.tap == Tap::FmDiscriminator {
+            self.write_chunk(chunk);
+        }
+    }
+
+    fn shutdown(&mut self, _grace: std::time::Duration) {
+        for (id, stream) in self.streams.drain() {
+            match finish_stream(stream) {
+                Ok(path) => self.host.info(format!(
+                    "Closed unfinished stream {id}: {}",
+                    path.display()
+                )),
+                Err(e) => self.host.error(format!("Could not close stream {id}: {e}")),
             }
-            let script = Script::parse(line, timeout).map_err(|e| format!("{}: {e}", s.short_name))?;
-            host.info(format!("{}: running {script}", s.short_name));
-            scripts.insert(s.short_name.clone(), script);
         }
-        if scripts.is_empty() {
-            return Err("Set the script to run.".into());
-        }
-        if !setup.has_format(format::M4A) {
-            host.info("no M4A encoder: the M4A file scripts are given won't be there");
-        }
-        let cwd = setup.capture_dir.clone();
-        let opts = QueueOptions { noun: "script run", ..QueueOptions::saved_in(&setup.data_dir) };
-        let log = host.clone();
-        let queue = CallQueue::start(host, opts, move |call: &ConcludedCall| {
-            // By short name, a system's identity: a call saved for a later run still finds its system.
-            let Some(script) = scripts.get(&call.call.short_name) else {
-                return Attempt::Skip("no script for this system".into());
-            };
-            // (Where it would be, as Trunk Recorder passes it, when it couldn't be made.)
-            let m4a = call.files.m4a.clone().unwrap_or_else(|| call.files.wav.with_extension("m4a"));
-            // Which system, site and talkgroup, without reading the JSON (a system's sites share its folder).
-            let c = &call.call;
-            let env = [("SHORT_NAME", c.short_name.clone()), ("SITE", c.site.clone()), ("TALKGROUP", c.talkgroup.to_string())];
-            script.run(&[&call.files.wav, &call.files.json, &m4a], &env, &cwd, &log, &call.path)
-        });
-        Ok(UploadScript { queue })
-    }
-
-    fn call_concluded(&mut self, call: ConcludedCall) {
-        self.queue.push(call);
-    }
-
-    fn shutdown(&mut self, grace: Duration) {
-        self.queue.shutdown(grace);
     }
 }
 
 fn main() {
-    trunk_recorder_plugin::run::<UploadScript>();
+    trunk_recorder_plugin::run::<MultimonCapture>();
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{Value, json};
-    use std::path::{Path, PathBuf};
-    use trunk_recorder_plugin::testing;
-    use trunk_recorder_plugin::{EXIT_CONFIG, HostMessage, Outcome, SystemInfo};
-
-    /// An executable shell script in `dir`.
-    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let p = dir.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p
-    }
-
-    fn hello(dir: &Path, config: Value, system: Value) -> HostMessage {
-        let mut h = testing::hello(dir, config);
-        h.systems[0].config = system;
-        HostMessage::Hello(h)
-    }
 
     #[test]
-    fn runs_with_the_calls_files_as_trunk_recorder_does() {
-        let dir = testing::temp_dir("upload-script");
-        let s = script(&dir, "up.sh", r#"printf '%s\n' "$@" "$(pwd)" > "$(dirname "$0")/args.txt""#);
-        let call = testing::call(&dir, "sys1", 101);
-        let cmd = format!("{} --to 'my server'", s.display());
-        let out = testing::run::<UploadScript>([hello(&dir, json!({ "script": cmd }), Value::Null), HostMessage::CallConcluded(call.clone())]);
-        assert!(out.ready(), "{:?}", out.messages);
-        assert_eq!(out.results(), vec![(call.path.clone(), Outcome::Ok, String::new(), String::new())]);
-        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
-        let cwd = std::fs::canonicalize(&dir).unwrap();
-        let want = [
-            "--to".to_string(),
-            "my server".into(),
-            call.files.wav.display().to_string(),
-            call.files.json.display().to_string(),
-            call.files.m4a.unwrap().display().to_string(),
-            cwd.display().to_string(),
-        ];
-        assert_eq!(args.lines().collect::<Vec<_>>(), want);
-    }
-
-    /// A call heard on several sites of a system is its system's: the site it was kept from comes as SITE.
-    #[test]
-    fn the_system_site_and_talkgroup_in_its_environment() {
-        let dir = testing::temp_dir("upload-script");
-        let s = script(&dir, "up.sh", r#"echo "$SHORT_NAME $SITE $TALKGROUP" > "$(dirname "$0")/env.txt""#);
-        let mut call = testing::call(&dir, "sys1", 101);
-        call.call.site = "south".into();
-        testing::run::<UploadScript>([hello(&dir, json!({ "script": s }), Value::Null), HostMessage::CallConcluded(call)]);
-        assert_eq!(std::fs::read_to_string(dir.join("env.txt")).unwrap(), "sys1 south 101\n");
-    }
-
-    #[test]
-    fn a_failing_script_says_why() {
-        let dir = testing::temp_dir("upload-script");
-        let s = script(&dir, "up.sh", "echo working; echo 'scp: connection refused' >&2; exit 3");
-        let out = testing::run::<UploadScript>([hello(&dir, json!({ "script": s }), Value::Null), HostMessage::CallConcluded(testing::call(&dir, "sys1", 5))]);
-        let r = out.results();
-        assert_eq!(r[0].1, Outcome::Failed);
-        assert_eq!(r[0].2, "the script ended with exit status 3");
-        assert!(out.logs().iter().any(|(_, l)| l.ends_with("scp: connection refused")), "what it said is logged: {:?}", out.logs());
-    }
-
-    #[test]
-    fn exit_75_tries_again_later() {
-        let dir = testing::temp_dir("upload-script");
-        let s = script(&dir, "up.sh", "exit 75");
-        let out = testing::run::<UploadScript>([hello(&dir, json!({ "script": s }), Value::Null), HostMessage::CallConcluded(testing::call(&dir, "sys1", 5))]);
-        assert!(out.results().is_empty(), "{:?}", out.results());
-        assert_eq!(std::fs::read_to_string(dir.join("data/queue.jsonl")).unwrap().lines().count(), 1);
-    }
-
-    #[test]
-    fn a_system_of_its_own_and_trunk_recorders_setting_name() {
-        let dir = testing::temp_dir("upload-script");
-        let ok = script(&dir, "ok.sh", "exit 0");
-        let bad = script(&dir, "bad.sh", "exit 1");
-        let out = testing::run::<UploadScript>([
-            hello(&dir, json!({ "script": bad }), json!({ "uploadScript": ok })),
-            HostMessage::CallConcluded(testing::call(&dir, "sys1", 5)),
-        ]);
-        assert_eq!(out.results()[0].1, Outcome::Ok);
-    }
-
-    #[test]
-    fn a_script_that_takes_too_long_is_stopped() {
-        let dir = testing::temp_dir("upload-script");
-        let s = script(&dir, "up.sh", "sleep 30");
-        let t0 = std::time::Instant::now();
-        let out = testing::run::<UploadScript>([
-            hello(&dir, json!({ "script": s, "timeoutSeconds": 1 }), Value::Null),
-            HostMessage::CallConcluded(testing::call(&dir, "sys1", 5)),
-        ]);
-        assert!(t0.elapsed() < Duration::from_secs(10));
-        let r = out.results();
-        assert_eq!(r[0].1, Outcome::Failed);
-        assert!(r[0].2.contains("1 s"), "{}", r[0].2);
-    }
-
-    #[test]
-    fn bad_settings() {
-        let dir = testing::temp_dir("upload-script");
-        let plain = dir.join("plain.sh");
-        std::fs::write(&plain, "#!/bin/sh\n").unwrap();
-        for (config, why) in [
-            (json!({}), "Set the script"),
-            (json!({ "script": "./encode-upload.sh" }), "full path"),
-            (json!({ "script": "/no/such/script.sh" }), "isn't there"),
-            (json!({ "script": plain }), "chmod +x"),
-            (json!({ "script": "/bin/echo 'unclosed" }), "quote"),
-        ] {
-            let out = testing::run::<UploadScript>([hello(&dir, config, Value::Null)]);
-            assert_eq!(out.exit_code, EXIT_CONFIG);
-            let msg = out.status().unwrap().1;
-            assert!(msg.contains(why), "{msg}");
-        }
-    }
-
-    /// A system can override the plugin's script (its own still comes first).
-    #[test]
-    fn a_system_overrides_the_script() {
-        let dir = testing::temp_dir("upload-script");
-        let all = script(&dir, "all.sh", "echo all >> \"$(dirname \"$0\")/ran\"");
-        let other = script(&dir, "other.sh", "echo other >> \"$(dirname \"$0\")/ran\"");
-        let mut h = testing::hello(&dir, json!({ "script": all.display().to_string() }));
-        h.systems.push(SystemInfo {
-            index: 1,
-            short_name: "sys2".into(),
-            kind: "p25".into(),
-            settings: json!({ "script": other.display().to_string() }),
-            ..Default::default()
-        });
-        let out = testing::run::<UploadScript>([
-            HostMessage::Hello(h),
-            HostMessage::CallConcluded(testing::call(&dir, "sys1", 1)),
-            HostMessage::CallConcluded(testing::call(&dir, "sys2", 2)),
-        ]);
-        assert!(out.results().iter().all(|r| r.1 == Outcome::Ok), "{:?}", out.results());
-        let mut ran: Vec<String> = std::fs::read_to_string(dir.join("ran")).unwrap().lines().map(String::from).collect();
-        ran.sort();
-        assert_eq!(ran, ["all", "other"]);
+    fn filenames_are_safe_and_nonempty() {
+        assert_eq!(safe_component("Halton Fire/EMS"), "Halton_Fire_EMS");
+        assert_eq!(safe_component(""), "unknown-system");
+        assert_eq!(safe_component("site_1-west"), "site_1-west");
     }
 }
