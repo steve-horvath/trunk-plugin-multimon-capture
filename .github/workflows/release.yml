@@ -107,14 +107,20 @@ jobs:
 
       - name: Build bundled multimon-ng (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make
+
+      - name: Compile bundled multimon-ng (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: |
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-          cmake --build multimon-ng-source/build --config Release --parallel
-          $decoder = Get-ChildItem -Path multimon-ng-source/build -Filter multimon-ng.exe -File -Recurse | Select-Object -First 1
-          if (-not $decoder) { throw "CMake built no multimon-ng.exe under multimon-ng-source/build" }
-          Copy-Item -LiteralPath $decoder.FullName -Destination ./multimon-ng.exe
+          cmake -S multimon-ng-source -B multimon-ng-source/build -G "MinGW Makefiles" -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
+          cmake --build multimon-ng-source/build --target multimon-ng --parallel
+          cp multimon-ng-source/build/multimon-ng.exe ./multimon-ng.exe
 
       - name: Prepare multimon-ng source offer
         shell: bash
