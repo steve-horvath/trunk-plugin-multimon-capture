@@ -48,6 +48,23 @@ Global plugin settings:
 | `multimonPath` | Optional executable path. Empty searches beside the plugin, then `PATH`. |
 | `protocols` | Repeated `-a` protocols. Default: POCSAG512, POCSAG1200, POCSAG2400, FLEX. |
 | `repeatableSox` | Pass `-r` to multimon-ng. Default: `true`. |
+| `multimonArguments` | Optional array of complete decoder flags. When nonempty, replaces the generated flags; the plugin always appends the raw recording path. Empty uses defaults, including `-p` to show partial POCSAG messages. |
+
+Example override, using only POCSAG512 with explicit polarity, partial output,
+and verbose statistics:
+
+```json
+{
+  "config": {
+    "multimonArguments": ["-t", "raw", "-a", "POCSAG512", "-f", "alpha", "-P", "normal", "-p", "-v3"]
+  }
+}
+```
+
+Each array item is passed as one process argument; no shell parsing occurs. A
+nonempty override replaces the default `-r`, `-t raw`, `-f alpha`, `-p`, and
+`-a` flags, plus the `protocols` and `repeatableSox` settings. Keep the array
+empty to use those generated defaults.
 
 The Health tab reports completed recordings with page output, recordings with no
 page output (only the demodulator header), and decoder errors. A recording counts
@@ -62,7 +79,8 @@ Example `trunk-pro plugin run --settings` JSON:
   "config": {
     "outputDirectory": "/home/radio/pocsag/raw",
     "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"],
-    "repeatableSox": true
+    "repeatableSox": true,
+    "multimonArguments": []
   },
   "systems": {
     "halton": {

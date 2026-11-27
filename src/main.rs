@@ -33,6 +33,11 @@ struct Config {
     ///
     /// Protocol names passed as repeated -a arguments. Defaults to POCSAG512, POCSAG1200, POCSAG2400 and FLEX.
     protocols: Vec<String>,
+    /// Complete multimon-ng option override
+    ///
+    /// When nonempty, replaces the generated flags before the input recording path.
+    /// Leave empty to use the default flags (including partial POCSAG output).
+    multimon_arguments: Vec<String>,
     /// Use multimon-ng's repeatable SoX mode
     ///
     /// Passes `-r` to multimon-ng. Enabled by default.
@@ -45,6 +50,7 @@ impl Default for Config {
             output_directory: "raw".into(),
             multimon_path: String::new(),
             protocols: vec!["POCSAG512".into(), "POCSAG1200".into(), "POCSAG2400".into(), "FLEX".into()],
+            multimon_arguments: Vec::new(),
             repeatable_sox: true,
         }
     }
@@ -74,6 +80,7 @@ struct MultimonCapture {
     filters: HashMap<String, TalkgroupFilter>,
     decoder: Option<PathBuf>,
     protocols: Vec<String>,
+    multimon_arguments: Vec<String>,
     repeatable_sox: bool,
     decode_stats: DecodeStats,
     last_metrics_at: Option<Instant>,
@@ -237,9 +244,10 @@ impl MultimonCapture {
         let output_path = raw_path.with_extension("multimon.txt");
         let error_path = raw_path.with_extension("multimon.log");
         let protocols = self.protocols.clone();
+        let multimon_arguments = self.multimon_arguments.clone();
         let repeatable_sox = self.repeatable_sox;
         let result = (|| -> io::Result<bool> {
-            let output = decoder_command(executable, raw_path, &protocols, repeatable_sox).output()?;
+            let output = decoder_command(executable, raw_path, &protocols, repeatable_sox, &multimon_arguments).output()?;
             let has_page = has_decoded_payload(&output.stdout);
             fs::write(&output_path, output.stdout)?;
             fs::write(&error_path, &output.stderr)?;
@@ -282,14 +290,24 @@ impl MultimonCapture {
     }
 }
 
-fn decoder_command(executable: &std::path::Path, raw_path: &std::path::Path, protocols: &[String], repeatable_sox: bool) -> Command {
+fn decoder_command(
+    executable: &std::path::Path,
+    raw_path: &std::path::Path,
+    protocols: &[String],
+    repeatable_sox: bool,
+    multimon_arguments: &[String],
+) -> Command {
     let mut command = Command::new(executable);
-    if repeatable_sox {
-        command.arg("-r");
-    }
-    command.arg("-t").arg("raw").arg("-f").arg("alpha");
-    for protocol in protocols {
-        command.arg("-a").arg(protocol);
+    if multimon_arguments.is_empty() {
+        if repeatable_sox {
+            command.arg("-r");
+        }
+        command.arg("-t").arg("raw").arg("-f").arg("alpha").arg("-p");
+        for protocol in protocols {
+            command.arg("-a").arg(protocol);
+        }
+    } else {
+        command.args(multimon_arguments);
     }
     command.arg(raw_path);
     command
@@ -408,8 +426,13 @@ impl Plugin for MultimonCapture {
     }
 
     fn start(host: Host, setup: Setup<Config, SystemConfig>) -> Result<Self, String> {
-        if setup.config.protocols.is_empty()
-            || setup.config.protocols.iter().any(|p| p.trim().is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        if setup.config.multimon_arguments.iter().any(|arg| arg.is_empty() || arg.contains('\0'))
+        {
+            return Err("multimonArguments entries must be nonempty arguments without NUL characters".into());
+        }
+        if setup.config.multimon_arguments.is_empty()
+            && (setup.config.protocols.is_empty()
+                || setup.config.protocols.iter().any(|p| p.trim().is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')))
         {
             return Err("protocols must contain one or more multimon-ng mode names (letters, digits, underscores)".into());
         }
@@ -436,6 +459,7 @@ impl Plugin for MultimonCapture {
             filters,
             decoder,
             protocols: setup.config.protocols,
+            multimon_arguments: setup.config.multimon_arguments,
             repeatable_sox: setup.config.repeatable_sox,
             decode_stats: DecodeStats::default(),
             last_metrics_at: None,
@@ -488,9 +512,18 @@ mod tests {
         let raw_path = PathBuf::from("capture.raw");
         let protocols = vec!["POCSAG512".to_string(), "FLEX".to_string()];
         let args =
-            |enabled| decoder_command(&executable, &raw_path, &protocols, enabled).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
-        assert_eq!(args(true), ["-r", "-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
-        assert_eq!(args(false), ["-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
+            |enabled| decoder_command(&executable, &raw_path, &protocols, enabled, &[]).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(args(true), ["-r", "-t", "raw", "-f", "alpha", "-p", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
+        assert_eq!(args(false), ["-t", "raw", "-f", "alpha", "-p", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
+    }
+
+    #[test]
+    fn custom_multimon_arguments_replace_default_flags_and_keep_input_path() {
+        let executable = PathBuf::from("multimon-ng");
+        let raw_path = PathBuf::from("capture.raw");
+        let arguments = vec!["-t".into(), "raw".into(), "-a".into(), "POCSAG512".into(), "-f".into(), "alpha".into(), "-p".into(), "-v3".into()];
+        let args = decoder_command(&executable, &raw_path, &[], true, &arguments).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(args, ["-t", "raw", "-a", "POCSAG512", "-f", "alpha", "-p", "-v3", "capture.raw"]);
     }
 
     #[test]

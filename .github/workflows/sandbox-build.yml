@@ -33,7 +33,7 @@ jobs:
       - name: Check manifest and package
         run: |
           id=trunk-plugin-multimon-capture
-          version=0.2.1
+          version=0.2.2
           binary="target/x86_64-unknown-linux-gnu/release/$id"
           "$binary" --describe > manifest.json
           python3 .github/check_manifest.py manifest.json --release
@@ -44,8 +44,8 @@ jobs:
           sha256sum "$name.tar.gz" > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: multimon-ng-decode-0.2.1-x86_64-linux-sandbox
+          name: multimon-ng-decode-0.2.2-x86_64-linux-sandbox
           path: |
-            trunk-plugin-multimon-capture-0.2.1-x86_64-unknown-linux-gnu.tar.gz
+            trunk-plugin-multimon-capture-0.2.2-x86_64-unknown-linux-gnu.tar.gz
             SHA256SUMS
           retention-days: 14

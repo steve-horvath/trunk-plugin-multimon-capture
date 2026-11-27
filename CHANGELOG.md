@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2]
+
+- Enable multimon-ng's partial POCSAG output (`-p`) in the default decoder flags.
+- Add `multimonArguments` to replace all generated decoder flags with an explicit argument array.
+- Add a Linux x86_64 sandbox package workflow for testing without publishing.
+
 ## [0.2.1]
 
 - Add a `repeatableSox` setting, enabled by default, that passes `-r` to multimon-ng.
