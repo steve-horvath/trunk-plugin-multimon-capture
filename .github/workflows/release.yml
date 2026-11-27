@@ -35,8 +35,30 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+  windows_decoder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+      - name: Build multimon-ng for Windows
+        run: |
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DCMAKE_TOOLCHAIN_FILE=multimon-ng-source/cmake/toolchain-mingw64.cmake -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+          cmake --build multimon-ng-source/build --target multimon-ng --parallel
+          test -s multimon-ng-source/build/multimon-ng.exe
+          mkdir -p windows-decoder
+          cp multimon-ng-source/build/multimon-ng.exe windows-decoder/
+          tar -C multimon-ng-source --exclude=build --exclude='build-*' -czf windows-decoder/multimon-ng-1.6.1-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-decoder
+          path: windows-decoder/*
+
   build:
-    needs: meta
+    needs: [meta, windows_decoder]
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +75,12 @@ jobs:
       VERSION: ${{ needs.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Get the Windows decoder
+        if: runner.os == 'Windows'
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-decoder
+          path: .
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
@@ -105,28 +133,8 @@ jobs:
           cmake --build multimon-ng-source/build-x64 --parallel
           lipo -create -output multimon-ng multimon-ng-source/build-arm/multimon-ng multimon-ng-source/build-x64/multimon-ng
 
-      - name: Build bundled multimon-ng (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-
-      - name: Set up MinGW
-        if: runner.os == 'Windows'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make
-
-      - name: Compile bundled multimon-ng (Windows)
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          cmake -S multimon-ng-source -B multimon-ng-source/build -G "MinGW Makefiles" -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
-          cmake --build multimon-ng-source/build --target multimon-ng --parallel
-          cp multimon-ng-source/build/multimon-ng.exe ./multimon-ng.exe
-
       - name: Prepare multimon-ng source offer
+        if: runner.os != 'Windows'
         shell: bash
         run: tar -C multimon-ng-source --exclude=build --exclude='build-*' -czf multimon-ng-1.6.1-source.tar.gz .
 
