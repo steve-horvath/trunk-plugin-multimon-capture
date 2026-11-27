@@ -112,7 +112,9 @@ jobs:
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
           cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build multimon-ng-source/build --config Release --parallel
-          Copy-Item multimon-ng-source/build/Release/multimon-ng.exe ./multimon-ng.exe
+          $decoder = Get-ChildItem -Path multimon-ng-source/build -Filter multimon-ng.exe -File -Recurse | Select-Object -First 1
+          if (-not $decoder) { throw "CMake built no multimon-ng.exe under multimon-ng-source/build" }
+          Copy-Item -LiteralPath $decoder.FullName -Destination ./multimon-ng.exe
 
       - name: Prepare multimon-ng source offer
         shell: bash
