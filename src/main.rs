@@ -178,20 +178,18 @@ impl MultimonCapture {
         // acquired its filed talkgroup. Keep those initial samples provisionally;
         // decide the stream when its first TGID arrives, or discard it at end if
         // the TGID never becomes known.
-        if restricted {
-            if let Some(tg) = chunk.talkgroup {
-                if !talkgroup_passes(self.filters.get(&chunk.short_name), Some(tg)) {
-                    if let Some(stream) = self.streams.remove(&chunk.stream) {
-                        discard_stream(stream);
-                    }
-                    if !chunk.last {
-                        self.ignored_streams.insert(chunk.stream);
-                    }
-                    return;
+        if restricted && let Some(tg) = chunk.talkgroup {
+            if !talkgroup_passes(self.filters.get(&chunk.short_name), Some(tg)) {
+                if let Some(stream) = self.streams.remove(&chunk.stream) {
+                    discard_stream(stream);
                 }
-                if let Some(stream) = self.streams.get_mut(&chunk.stream) {
-                    stream.talkgroup_unresolved = false;
+                if !chunk.last {
+                    self.ignored_streams.insert(chunk.stream);
                 }
+                return;
+            }
+            if let Some(stream) = self.streams.get_mut(&chunk.stream) {
+                stream.talkgroup_unresolved = false;
             }
         }
 
@@ -523,3 +521,4 @@ mod tests {
         assert!(invalid.filter().is_err());
     }
 }
+
