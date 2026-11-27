@@ -1,16 +1,17 @@
-//! Captures every FM discriminator tap as raw S16LE PCM, one file per transmission.
+//! Captures selected FM discriminator taps and decodes completed streams with multimon-ng.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
+    process::Command,
     path::PathBuf,
 };
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use trunk_recorder_plugin::{Host, Manifest, NoConfig, Plugin, Setup, Tap, TapChunk, TapData};
+use trunk_recorder_plugin::{Host, Manifest, Plugin, Setup, TalkgroupFilter, Talkgroups, Tap, TapChunk, TapData};
 
 const SAMPLE_RATE: u32 = 22_050;
 
@@ -23,12 +24,34 @@ struct Config {
     /// a relative path is resolved under this plugin's persistent data directory.
     /// The default is the plugin's own data directory/raw.
     output_directory: String,
+    /// multimon-ng executable
+    ///
+    /// Path to multimon-ng. When empty, the plugin searches beside itself and then PATH.
+    multimon_path: String,
+    /// Decoder protocols
+    ///
+    /// Protocol names passed as repeated -a arguments. Defaults to POCSAG512, POCSAG1200, POCSAG2400 and FLEX.
+    protocols: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { output_directory: "raw".into() }
+        Self {
+            output_directory: "raw".into(),
+            multimon_path: String::new(),
+            protocols: vec!["POCSAG512".into(), "POCSAG1200".into(), "POCSAG2400".into(), "FLEX".into()],
+        }
     }
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct SystemConfig {
+    /// Talkgroups to capture and decode
+    ///
+    /// Choose every talkgroup, only selected talkgroups, or all but selected talkgroups.
+    #[serde(flatten)]
+    talkgroups: Talkgroups,
 }
 
 struct CapturedStream {
@@ -41,6 +64,10 @@ struct MultimonCapture {
     host: Host,
     output_dir: PathBuf,
     streams: HashMap<u64, CapturedStream>,
+    filters: HashMap<String, TalkgroupFilter>,
+    decoder: Option<PathBuf>,
+    protocols: Vec<String>,
+    ignored_streams: HashSet<u64>,
 }
 
 impl MultimonCapture {
@@ -82,6 +109,7 @@ impl MultimonCapture {
                 "system": chunk.short_name,
                 "system_id": chunk.system_id,
                 "system_index": chunk.system,
+                "talkgroup": chunk.talkgroup,
                 "frequency_hz": chunk.freq_hz,
                 "slot": chunk.slot,
                 "sample_rate": SAMPLE_RATE,
@@ -97,6 +125,17 @@ impl MultimonCapture {
     }
 
     fn write_chunk(&mut self, chunk: TapChunk) {
+        if chunk.first {
+            self.ignored_streams.remove(&chunk.stream);
+            let passes = talkgroup_passes(self.filters.get(&chunk.short_name), chunk.talkgroup);
+            if !passes {
+                self.ignored_streams.insert(chunk.stream);
+                return;
+            }
+        } else if self.ignored_streams.contains(&chunk.stream) {
+            if chunk.last { self.ignored_streams.remove(&chunk.stream); }
+            return;
+        }
         if chunk.first {
             if let Some(previous) = self.streams.remove(&chunk.stream) {
                 let _ = finish_stream(previous);
@@ -133,11 +172,63 @@ impl MultimonCapture {
             && let Some(stream) = self.streams.remove(&chunk.stream)
         {
             match finish_stream(stream) {
-                Ok(path) => self.host.info(format!("Finished discriminator capture: {}", path.display())),
+                Ok(path) => {
+                    self.host.info(format!("Finished discriminator capture: {}", path.display()));
+                    self.decode(&path);
+                }
                 Err(e) => self.host.error(format!("Could not finish stream: {e}")),
             }
         }
     }
+
+    fn decode(&self, raw_path: &std::path::Path) {
+        let Some(executable) = &self.decoder else {
+            self.host.error("multimon-ng was not found; raw capture was saved without decoding");
+            return;
+        };
+        let output_path = raw_path.with_extension("multimon.txt");
+        let error_path = raw_path.with_extension("multimon.log");
+        let result = (|| -> io::Result<()> {
+            let mut command = Command::new(executable);
+            command.arg("-t").arg("raw").arg("-f").arg("alpha");
+            for protocol in &self.protocols { command.arg("-a").arg(protocol); }
+            let output = command.arg(raw_path).output()?;
+            fs::write(&output_path, output.stdout)?;
+            fs::write(&error_path, &output.stderr)?;
+            if !output.status.success() {
+                return Err(io::Error::other(format!("multimon-ng exited with {}", output.status)));
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.host.info(format!("Decoded capture to {}", output_path.display())),
+            Err(e) => self.host.error(format!("Could not decode {}: {e}", raw_path.display())),
+        }
+    }
+}
+
+fn talkgroup_passes(filter: Option<&TalkgroupFilter>, talkgroup: Option<u32>) -> bool {
+    filter.is_none_or(|f| f.is_empty() || talkgroup.is_some_and(|tg| f.passes(tg)))
+}
+
+fn find_decoder(configured: &str) -> Option<PathBuf> {
+    if !configured.trim().is_empty() {
+        let path = PathBuf::from(configured.trim());
+        return path.is_file().then_some(path);
+    }
+    if let Ok(current) = std::env::current_exe() {
+        if let Some(parent) = current.parent() {
+            for name in ["multimon-ng", "multimon-ng.exe"] {
+                let path = parent.join(name);
+                if path.is_file() { return Some(path); }
+            }
+        }
+    }
+    #[cfg(windows)] let names = ["multimon-ng.exe"];
+    #[cfg(not(windows))] let names = ["multimon-ng"];
+    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)).collect::<Vec<_>>())
+        .find(|path| path.is_file()))
 }
 
 fn write_chunk_files(stream: &mut CapturedStream, chunk: &TapChunk) -> io::Result<()> {
@@ -199,21 +290,35 @@ fn safe_component(value: &str) -> String {
 
 impl Plugin for MultimonCapture {
     type Config = Config;
-    type SystemConfig = NoConfig;
+    type SystemConfig = SystemConfig;
 
     fn manifest() -> Manifest {
-        Manifest { name: "Multimon Capture".into(), subscribe: vec!["tap.fm.discriminator".into()], ..trunk_recorder_plugin::manifest!() }
+        Manifest { name: "Multimon-ng Decode".into(), subscribe: vec!["tap.fm.discriminator".into()], ..trunk_recorder_plugin::manifest!() }
     }
 
-    fn start(host: Host, setup: Setup<Config, NoConfig>) -> Result<Self, String> {
+    fn start(host: Host, setup: Setup<Config, SystemConfig>) -> Result<Self, String> {
+        if setup.config.protocols.is_empty()
+            || setup.config.protocols.iter().any(|p| p.trim().is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            return Err("protocols must contain one or more multimon-ng mode names (letters, digits, underscores)".into());
+        }
         let configured = PathBuf::from(setup.config.output_directory.trim());
         let output_dir = if configured.is_absolute() { configured } else { setup.data_dir.join(configured) };
 
         fs::create_dir_all(&output_dir).map_err(|e| format!("could not create output directory {}: {e}", output_dir.display()))?;
 
-        host.info(format!("Saving all FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}", output_dir.display()));
+        let mut filters = HashMap::new();
+        for system in &setup.systems {
+            let config = system.config.as_ref().cloned().unwrap_or_default();
+            filters.insert(system.short_name.clone(), config.talkgroups.filter_for(&system.short_name)?);
+        }
+        let decoder = find_decoder(&setup.config.multimon_path);
+        if decoder.is_none() {
+            host.warn("multimon-ng not found; raw captures will continue without decoding");
+        }
+        host.info(format!("Saving selected FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}", output_dir.display()));
 
-        Ok(Self { host, output_dir, streams: HashMap::new() })
+        Ok(Self { host, output_dir, streams: HashMap::new(), filters, decoder, protocols: setup.config.protocols, ignored_streams: HashSet::new() })
     }
 
     fn tap(&mut self, chunk: TapChunk) {
@@ -245,5 +350,24 @@ mod tests {
         assert_eq!(safe_component("Halton Fire/EMS"), "Halton_Fire_EMS");
         assert_eq!(safe_component(""), "unknown-system");
         assert_eq!(safe_component("site_1-west"), "site_1-west");
+    }
+
+    #[test]
+    fn talkgroup_modes_have_safe_empty_and_invalid_behavior() {
+        let all: Talkgroups = serde_json::from_value(json!({})).unwrap();
+        assert!(all.filter().unwrap().passes(101));
+
+        let only: Talkgroups = serde_json::from_value(json!({ "talkgroupMode": "only", "talkgroupAllow": ["100-110"] })).unwrap();
+        let filter = only.filter().unwrap();
+        assert!(filter.passes(101));
+        assert!(!filter.passes(111));
+        assert!(!talkgroup_passes(Some(&filter), None), "selected TG mode excludes chunks without a TGID");
+        assert!(talkgroup_passes(Some(&Talkgroups::default().filter().unwrap()), None));
+
+        let empty_only: Talkgroups = serde_json::from_value(json!({ "talkgroupMode": "only" })).unwrap();
+        assert!(empty_only.filter().is_err());
+
+        let invalid: Talkgroups = serde_json::from_value(json!({ "talkgroupMode": "allBut", "talkgroupDeny": ["not-a-tgid"] })).unwrap();
+        assert!(invalid.filter().is_err());
     }
 }
