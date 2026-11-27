@@ -64,6 +64,7 @@ struct CapturedStream {
     raw: BufWriter<File>,
     metadata: BufWriter<File>,
     raw_path: PathBuf,
+    talkgroup_unresolved: bool,
 }
 
 struct MultimonCapture {
@@ -117,7 +118,7 @@ impl MultimonCapture {
                 }
             };
 
-            let mut captured = CapturedStream { raw: BufWriter::new(raw), metadata: BufWriter::new(metadata), raw_path };
+            let mut captured = CapturedStream { raw: BufWriter::new(raw), metadata: BufWriter::new(metadata), raw_path, talkgroup_unresolved: false };
             let header = json!({
                 "event": "stream_start",
                 "tap": "fm.discriminator",
@@ -141,11 +142,13 @@ impl MultimonCapture {
     }
 
     fn write_chunk(&mut self, chunk: TapChunk) {
+        let restricted = talkgroup_requires_resolution(self.filters.get(&chunk.short_name), None);
         if chunk.first {
             self.ignored_streams.remove(&chunk.stream);
-            let passes = talkgroup_passes(self.filters.get(&chunk.short_name), chunk.talkgroup);
-            if !passes {
-                self.ignored_streams.insert(chunk.stream);
+            if chunk.talkgroup.is_some_and(|tg| !talkgroup_passes(self.filters.get(&chunk.short_name), Some(tg))) {
+                if !chunk.last {
+                    self.ignored_streams.insert(chunk.stream);
+                }
                 return;
             }
         } else if self.ignored_streams.contains(&chunk.stream) {
@@ -159,13 +162,35 @@ impl MultimonCapture {
                 let _ = finish_stream(previous);
             }
             match self.open_stream(&chunk) {
-                Ok(stream) => {
+                Ok(mut stream) => {
+                    stream.talkgroup_unresolved = restricted && chunk.talkgroup.is_none();
                     self.host.info(format!("Capturing {} Hz from {} to {}", chunk.freq_hz.round(), chunk.short_name, stream.raw_path.display()));
                     self.streams.insert(chunk.stream, stream);
                 }
                 Err(e) => {
                     self.host.error(format!("Could not create capture for stream {}: {e}", chunk.stream));
                     return;
+                }
+            }
+        }
+
+        // TRP can hand out discriminator samples before a conventional call has
+        // acquired its filed talkgroup. Keep those initial samples provisionally;
+        // decide the stream when its first TGID arrives, or discard it at end if
+        // the TGID never becomes known.
+        if restricted {
+            if let Some(tg) = chunk.talkgroup {
+                if !talkgroup_passes(self.filters.get(&chunk.short_name), Some(tg)) {
+                    if let Some(stream) = self.streams.remove(&chunk.stream) {
+                        discard_stream(stream);
+                    }
+                    if !chunk.last {
+                        self.ignored_streams.insert(chunk.stream);
+                    }
+                    return;
+                }
+                if let Some(stream) = self.streams.get_mut(&chunk.stream) {
+                    stream.talkgroup_unresolved = false;
                 }
             }
         }
@@ -189,6 +214,11 @@ impl MultimonCapture {
         if chunk.last
             && let Some(stream) = self.streams.remove(&chunk.stream)
         {
+            if stream.talkgroup_unresolved {
+                discard_stream(stream);
+                self.host.info(format!("Discarded discriminator stream {} because its talkgroup was never identified", chunk.stream));
+                return;
+            }
             match finish_stream(stream) {
                 Ok(path) => {
                     self.host.info(format!("Finished discriminator capture: {}", path.display()));
@@ -278,6 +308,10 @@ fn talkgroup_passes(filter: Option<&TalkgroupFilter>, talkgroup: Option<u32>) ->
     filter.is_none_or(|f| f.is_empty() || talkgroup.is_some_and(|tg| f.passes(tg)))
 }
 
+fn talkgroup_requires_resolution(filter: Option<&TalkgroupFilter>, talkgroup: Option<u32>) -> bool {
+    talkgroup.is_none() && filter.is_some_and(|f| !f.is_empty())
+}
+
 fn find_decoder(configured: &str) -> Option<PathBuf> {
     if !configured.trim().is_empty() {
         let path = PathBuf::from(configured.trim());
@@ -352,6 +386,14 @@ fn finish_stream(mut stream: CapturedStream) -> io::Result<PathBuf> {
     stream.raw.flush()?;
     stream.metadata.flush()?;
     Ok(stream.raw_path)
+}
+
+fn discard_stream(stream: CapturedStream) {
+    let raw_path = stream.raw_path.clone();
+    let metadata_path = raw_path.with_extension("jsonl");
+    drop(stream);
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(metadata_path);
 }
 
 fn safe_component(value: &str) -> String {
@@ -469,7 +511,9 @@ mod tests {
         let filter = only.filter().unwrap();
         assert!(filter.passes(101));
         assert!(!filter.passes(111));
-        assert!(!talkgroup_passes(Some(&filter), None), "selected TG mode excludes chunks without a TGID");
+        assert!(!talkgroup_passes(Some(&filter), None), "an unknown TGID is not yet eligible");
+        assert!(talkgroup_requires_resolution(Some(&filter), None), "unknown TGID should defer the decision until later chunks");
+        assert!(!talkgroup_requires_resolution(Some(&filter), Some(101)));
         assert!(talkgroup_passes(Some(&Talkgroups::default().filter().unwrap()), None));
 
         let empty_only: Talkgroups = serde_json::from_value(json!({ "talkgroupMode": "only" })).unwrap();

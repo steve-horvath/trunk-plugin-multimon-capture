@@ -29,8 +29,12 @@ or all but selected TGs. The default (no system override) captures all TGs.
 Selecting **Only some** with an empty list or entering an invalid ID/range is a
 startup configuration error naming the system. The SDK's normal talkgroup list
 syntax applies, including numbers, ranges, and patterns.
-When a system is in a selected/excluded mode, a tap chunk without a talkgroup ID
-is skipped because its eligibility cannot be determined.
+When a system is in a selected/excluded mode, the recorder can emit initial
+conventional-system samples before it has assigned a talkgroup ID. The plugin
+keeps those samples provisionally, then applies the whitelist or exclusion when
+the first TGID arrives. If the stream ends without a TGID, it removes the
+provisional raw and metadata files and does not decode them. A known TGID outside
+the selection discards the stream immediately.
 
 Global plugin settings:
 

@@ -4,6 +4,7 @@
 
 - Add a `repeatableSox` setting, enabled by default, that passes `-r` to multimon-ng.
 - Report completed recordings with decoded page output, no-page recordings, and decoder errors as custom plugin metrics.
+- Defer talkgroup filtering when a stream starts before TRP provides its TGID, so conventional-system captures are retained or discarded once the TGID becomes known.
 
 ## [0.2.0]
 
