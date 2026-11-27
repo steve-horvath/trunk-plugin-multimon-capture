@@ -90,7 +90,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake build-essential
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-          cmake -S multimon-ng-source -B multimon-ng-source/build
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
           cmake --build multimon-ng-source/build --parallel
           cp multimon-ng-source/build/multimon-ng ./multimon-ng
 
@@ -99,9 +99,9 @@ jobs:
         shell: bash
         run: |
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-          cmake -S multimon-ng-source -B multimon-ng-source/build-arm -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake -S multimon-ng-source -B multimon-ng-source/build-arm -DCMAKE_OSX_ARCHITECTURES=arm64 -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF
           cmake --build multimon-ng-source/build-arm --parallel
-          cmake -S multimon-ng-source -B multimon-ng-source/build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64
+          cmake -S multimon-ng-source -B multimon-ng-source/build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF
           cmake --build multimon-ng-source/build-x64 --parallel
           lipo -create -output multimon-ng multimon-ng-source/build-arm/multimon-ng multimon-ng-source/build-x64/multimon-ng
 
@@ -110,7 +110,7 @@ jobs:
         shell: pwsh
         run: |
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-          cmake -S multimon-ng-source -B multimon-ng-source/build
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build multimon-ng-source/build --config Release --parallel
           Copy-Item multimon-ng-source/build/Release/multimon-ng.exe ./multimon-ng.exe
 

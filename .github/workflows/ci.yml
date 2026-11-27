@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  decoder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build multimon-ng
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF
+          cmake --build multimon-ng-source/build --parallel
+      - name: Run decoder smoke test
+        run: |
+          : > empty.raw
+          multimon-ng-source/build/multimon-ng -t raw -a POCSAG512 empty.raw
+
   test:
     runs-on: ubuntu-latest
     steps:
