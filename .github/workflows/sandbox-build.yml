@@ -1,0 +1,51 @@
+name: Sandbox build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Build plugin for glibc 2.28
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+          cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu.2.28
+      - name: Build bundled multimon-ng
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+          cmake --build multimon-ng-source/build --parallel
+          cp multimon-ng-source/build/multimon-ng multimon-ng
+          tar -C multimon-ng-source --exclude=build --exclude='build-*' -czf multimon-ng-1.6.1-source.tar.gz .
+      - name: Check manifest and package
+        run: |
+          id=trunk-plugin-multimon-capture
+          version=0.2.1
+          binary="target/x86_64-unknown-linux-gnu/release/$id"
+          "$binary" --describe > manifest.json
+          python3 .github/check_manifest.py manifest.json --release
+          name="$id-$version-x86_64-unknown-linux-gnu"
+          mkdir -p "pkg/$name"
+          cp "$binary" multimon-ng README.md LICENSE multimon-ng-1.6.1-source.tar.gz "pkg/$name/"
+          tar -C pkg -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multimon-ng-decode-0.2.1-x86_64-linux-sandbox
+          path: |
+            trunk-plugin-multimon-capture-0.2.1-x86_64-unknown-linux-gnu.tar.gz
+            SHA256SUMS
+          retention-days: 14

@@ -29,8 +29,16 @@ or all but selected TGs. The default (no system override) captures all TGs.
 Selecting **Only some** with an empty list or entering an invalid ID/range is a
 startup configuration error naming the system. The SDK's normal talkgroup list
 syntax applies, including numbers, ranges, and patterns.
-When a system is in a selected/excluded mode, a tap chunk without a talkgroup ID
-is skipped because its eligibility cannot be determined.
+When a system is in a selected/excluded mode, the recorder can emit initial
+conventional-system samples before it has assigned a talkgroup ID. The plugin
+keeps those samples provisionally, then applies the whitelist or exclusion when
+the first TGID arrives. If the stream ends without a TGID, it removes the
+provisional raw and metadata files and does not decode them. A known TGID outside
+the selection discards the stream immediately.
+The comparison uses the TGID in TRP's tap metadata. On conventional systems,
+that may be the channel row's configured talkgroup, the talkgroup heard over the
+air, or the frequency-derived default; check the `talkgroup` field in a capture's
+JSONL sidecar to confirm which ID to select.
 
 Global plugin settings:
 
@@ -39,6 +47,13 @@ Global plugin settings:
 | `outputDirectory` | Capture destination. Default `raw`; relative paths are under plugin data. |
 | `multimonPath` | Optional executable path. Empty searches beside the plugin, then `PATH`. |
 | `protocols` | Repeated `-a` protocols. Default: POCSAG512, POCSAG1200, POCSAG2400, FLEX. |
+| `repeatableSox` | Pass `-r` to multimon-ng. Default: `true`. |
+
+The Health tab reports completed recordings with page output, recordings with no
+page output (only the demodulator header), and decoder errors. A recording counts
+as decoded when multimon-ng exits successfully and writes content beyond the
+`Enabled demodulators` header. The standard Sent/Failed call counters do not apply
+to this live discriminator-tap plugin.
 
 Example `trunk-pro plugin run --settings` JSON:
 
@@ -46,7 +61,8 @@ Example `trunk-pro plugin run --settings` JSON:
 {
   "config": {
     "outputDirectory": "/home/radio/pocsag/raw",
-    "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"]
+    "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"],
+    "repeatableSox": true
   },
   "systems": {
     "halton": {
@@ -56,6 +72,11 @@ Example `trunk-pro plugin run --settings` JSON:
   }
 }
 ```
+
+`--settings` must be followed by the path to this JSON file; a bare `--settings`
+is reported as `not JSON`. Also, `trunk-pro plugin run` replays call records and
+does not emit live `tap.fm.discriminator` chunks, so use a separate live TRP
+sandbox to verify raw capture and talkgroup filtering.
 
 `talkgroupMode` accepts `all` (default), `only`, or `allBut`. `talkgroupAllow`
 selects inclusions; `talkgroupDeny` selects exclusions. The UI only shows the
@@ -83,10 +104,11 @@ cmake --build multimon-ng/build --parallel
 sudo cmake --install multimon-ng/build
 cargo test --locked
 cargo build --release
-trunk-pro plugin run ./target/release/trunk-plugin-multimon-capture ~/TrunkRecorderPro --settings examples/settings.json
+trunk-pro plugin describe ./target/release/trunk-plugin-multimon-capture
 ```
 
 ## License
 
 Plugin: GPL-3.0-or-later. multimon-ng is GPL-2.0-or-later; bundled builds must
 include its license and source/build provenance as required by its license.
+
