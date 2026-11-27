@@ -220,13 +220,13 @@ fn find_decoder(configured: &str) -> Option<PathBuf> {
         let path = PathBuf::from(configured.trim());
         return path.is_file().then_some(path);
     }
-    if let Ok(current) = std::env::current_exe() {
-        if let Some(parent) = current.parent() {
-            for name in ["multimon-ng", "multimon-ng.exe"] {
-                let path = parent.join(name);
-                if path.is_file() {
-                    return Some(path);
-                }
+    if let Ok(current) = std::env::current_exe()
+        && let Some(parent) = current.parent()
+    {
+        for name in ["multimon-ng", "multimon-ng.exe"] {
+            let path = parent.join(name);
+            if path.is_file() {
+                return Some(path);
             }
         }
     }
