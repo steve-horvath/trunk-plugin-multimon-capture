@@ -1,82 +1,76 @@
-# Upload script for Trunk Recorder Pro
+# Multimon Capture for Trunk Recorder Pro
 
-Runs a script of yours on each call [Trunk Recorder Pro](https://github.com/TrunkRecorder/trunk-recorder-pro)
-records: to copy it to a server, upload it somewhere no plugin does, or
-anything else. It does what Trunk Recorder's `uploadScript` setting does, and
-existing scripts work unchanged.
+A Trunk Recorder Pro plugin that captures every FM discriminator signal tap as
+raw audio, one file per transmission. It does not run a decoder: the files are
+ready to feed to `multimon-ng` or another pager/data decoder separately.
+
+## What it captures
+
+The plugin subscribes to `tap.fm.discriminator`. This is the analog FM
+demodulator output before de-emphasis and voice filtering:
+
+- **Format:** signed 16-bit little-endian PCM (`s16le`)
+- **Channels:** mono
+- **Sample rate:** 22,050 Hz
+- **Scope:** every discriminator stream delivered by Trunk Recorder Pro,
+  including streams that aren't associated with a recorded call
+- **Files:** one `.raw` file and one `.jsonl` metadata sidecar per transmission
+
+The capture is not filtered by talkgroup, call recording rules, or whether a
+call WAV is saved. A stream ends when the recorder marks its tap stream as
+finished. An unfinished stream is flushed when the plugin shuts down.
+
+## Output
+
+By default, files are written under the plugin's persistent data directory:
+
+```
+plugin-data/trunk-plugin-multimon-capture/raw/
+  system_857262500Hz_1795700000000_stream123.raw
+  system_857262500Hz_1795700000000_stream123.jsonl
+```
+
+The raw file contains only little-endian signed 16-bit samples. It has no WAV
+header. The JSONL sidecar contains a stream header followed by one record per
+chunk, including sequence, sample offset/count, frequency, timestamp, and any
+call/talkgroup metadata known for that chunk.
 
 ## Settings
 
-| Setting | |
+| Setting | Description |
 |---|---|
-| **Script** | What to run for each call: the full path of a script or program, then any arguments of your own. |
-| **Time limit (seconds)** | A run that takes longer is stopped, and counts as failed. 300 by default. |
+| **Output directory** | Destination for captures. An absolute path is used directly. A relative path is resolved under the plugin's persistent data directory. Default: `raw`. |
 
-For each system:
+Example settings:
 
-| Setting | |
-|---|---|
-| **Script** | This system's own script, run instead of the one above. |
+```json
+{
+  "config": {
+    "outputDirectory": "/home/steve/HALTON/pocsag/raw"
+  }
+}
+```
 
-Quote arguments with spaces (`/home/me/up.sh 'my server'`). A program on the
-PATH can be named on its own (`rclone copy …`); a script needs its full path
-(`~/` works), since the plugin doesn't run in Trunk Recorder's folder. Scripts
-have to be executable (`chmod +x`).
+Ensure the Trunk Recorder Pro process has write permission to the directory.
 
-## What the script is given
+## Using the raw files
 
-After its own arguments, three paths:
+For example, decode a captured stream with:
 
-1. the call's WAV,
-2. its JSON (Trunk Recorder's call JSON),
-3. its M4A.
+```sh
+multimon-ng -t raw -a POCSAG512 -a POCSAG1200 -a POCSAG2400 \
+  -f alpha capture.raw
+```
 
-The M4A is there when the recorder has an M4A encoder (built into macOS;
-install [ffmpeg](https://ffmpeg.org) elsewhere). Without one, the third path
-is where it would be, and there's no file there.
-
-In its environment: `SHORT_NAME` (the call's system), `SITE` (the site it was
-kept from) and `TALKGROUP`, the same as in its JSON. A system can have several
-sites, and a call heard on more than one is saved once, in the system's folder:
-a script that told sites apart by their short name or folder can use `SITE`.
-
-The script runs in the recorder's capture folder.
-
-## When it fails
-
-A script that exits with status 0 has done its job. Any other status marks the
-call failed, with the last line the script printed (on stderr, if it printed
-anything there), and everything it printed goes to the plugin's log.
-
-Exit with status **75** to have the call tried again later: after 10 seconds,
-1 minute, 5 minutes and 15 minutes. Calls still waiting when recording stops
-are kept, and run again when it starts. (Trunk Recorder never retries.)
-
-## Coming from Trunk Recorder
-
-Paste each system's `uploadScript` into its **Script** (or set one for all of
-them), with the script's full path in place of `./`. The arguments are the
-same, in the same order. Trunk Recorder systems that are sites of one system
-(`multiSite`) are one system here, with one script: it can tell them apart by
-`SITE`.
-
-What becomes of the call's files afterwards is up to the recorder's
-`audioArchive`, `callLog` and `archiveFilesOnFailure` settings, as in Trunk
-Recorder: once the script and every other plugin taking calls have reported
-how the call went, the recorder deletes the audio unless `audioArchive` is on
-and the JSON unless `callLog` is on, and keeps everything when one of them
-failed and `archiveFilesOnFailure` is on (the default). A call waiting to be
-tried again (exit status 75) keeps its files until it's done. So the files
-are there for as long as the script runs, but not after: a script that hands
-them to something running in the background should copy them first, and one
-that wants them kept should turn `audioArchive` (and `callLog`) on rather
-than move them away.
+The decoder configuration and supported baud rates can be adjusted independently
+of capture. This first version deliberately only captures raw audio; automatic
+decoding, filtering, and forwarding are out of scope.
 
 ## Building
 
 ```sh
 cargo build --release
-trunk-pro plugin run ./target/release/upload-script ~/TrunkRecorderPro --settings examples/settings.json
+trunk-pro plugin run ./target/release/trunk-plugin-multimon-capture ~/TrunkRecorderPro
 ```
 
 ## License
