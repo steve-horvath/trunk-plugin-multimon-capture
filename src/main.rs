@@ -426,8 +426,7 @@ impl Plugin for MultimonCapture {
     }
 
     fn start(host: Host, setup: Setup<Config, SystemConfig>) -> Result<Self, String> {
-        if setup.config.multimon_arguments.iter().any(|arg| arg.is_empty() || arg.contains('\0'))
-        {
+        if setup.config.multimon_arguments.iter().any(|arg| arg.is_empty() || arg.contains('\0')) {
             return Err("multimonArguments entries must be nonempty arguments without NUL characters".into());
         }
         if setup.config.multimon_arguments.is_empty()
@@ -511,8 +510,9 @@ mod tests {
         let executable = PathBuf::from("multimon-ng");
         let raw_path = PathBuf::from("capture.raw");
         let protocols = vec!["POCSAG512".to_string(), "FLEX".to_string()];
-        let args =
-            |enabled| decoder_command(&executable, &raw_path, &protocols, enabled, &[]).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let args = |enabled| {
+            decoder_command(&executable, &raw_path, &protocols, enabled, &[]).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
         assert_eq!(args(true), ["-r", "-t", "raw", "-f", "alpha", "-p", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
         assert_eq!(args(false), ["-t", "raw", "-f", "alpha", "-p", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
     }
