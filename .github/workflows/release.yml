@@ -107,6 +107,11 @@ jobs:
 
       - name: Build bundled multimon-ng (Windows)
         if: runner.os == 'Windows'
+        shell: bash
+        run: git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+
+      - name: Set up MinGW
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -117,7 +122,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
           cmake -S multimon-ng-source -B multimon-ng-source/build -G "MinGW Makefiles" -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
           cmake --build multimon-ng-source/build --target multimon-ng --parallel
           cp multimon-ng-source/build/multimon-ng.exe ./multimon-ng.exe
