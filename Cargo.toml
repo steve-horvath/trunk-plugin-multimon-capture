@@ -1,6 +1,6 @@
 [package]
 name = "trunk-plugin-multimon-capture"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Captures selected Trunk Recorder Pro FM discriminator taps and decodes completed transmissions with multimon-ng."
 license = "GPL-3.0-or-later"

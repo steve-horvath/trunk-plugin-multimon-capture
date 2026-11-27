@@ -39,6 +39,13 @@ Global plugin settings:
 | `outputDirectory` | Capture destination. Default `raw`; relative paths are under plugin data. |
 | `multimonPath` | Optional executable path. Empty searches beside the plugin, then `PATH`. |
 | `protocols` | Repeated `-a` protocols. Default: POCSAG512, POCSAG1200, POCSAG2400, FLEX. |
+| `repeatableSox` | Pass `-r` to multimon-ng. Default: `true`. |
+
+The Health tab reports completed recordings with page output, recordings with no
+page output (only the demodulator header), and decoder errors. A recording counts
+as decoded when multimon-ng exits successfully and writes content beyond the
+`Enabled demodulators` header. The standard Sent/Failed call counters do not apply
+to this live discriminator-tap plugin.
 
 Example `trunk-pro plugin run --settings` JSON:
 
@@ -46,7 +53,8 @@ Example `trunk-pro plugin run --settings` JSON:
 {
   "config": {
     "outputDirectory": "/home/radio/pocsag/raw",
-    "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"]
+    "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"],
+    "repeatableSox": true
   },
   "systems": {
     "halton": {

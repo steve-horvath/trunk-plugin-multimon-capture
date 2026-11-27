@@ -1,17 +1,18 @@
 //! Captures selected FM discriminator taps and decodes completed streams with multimon-ng.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
     path::PathBuf,
     process::Command,
+    time::{Duration, Instant},
 };
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use trunk_recorder_plugin::{Host, Manifest, Plugin, Setup, TalkgroupFilter, Talkgroups, Tap, TapChunk, TapData};
+use trunk_recorder_plugin::{Host, Manifest, Metrics, Plugin, Setup, TalkgroupFilter, Talkgroups, Tap, TapChunk, TapData};
 
 const SAMPLE_RATE: u32 = 22_050;
 
@@ -32,6 +33,10 @@ struct Config {
     ///
     /// Protocol names passed as repeated -a arguments. Defaults to POCSAG512, POCSAG1200, POCSAG2400 and FLEX.
     protocols: Vec<String>,
+    /// Use multimon-ng's repeatable SoX mode
+    ///
+    /// Passes `-r` to multimon-ng. Enabled by default.
+    repeatable_sox: bool,
 }
 
 impl Default for Config {
@@ -40,6 +45,7 @@ impl Default for Config {
             output_directory: "raw".into(),
             multimon_path: String::new(),
             protocols: vec!["POCSAG512".into(), "POCSAG1200".into(), "POCSAG2400".into(), "FLEX".into()],
+            repeatable_sox: true,
         }
     }
 }
@@ -67,7 +73,17 @@ struct MultimonCapture {
     filters: HashMap<String, TalkgroupFilter>,
     decoder: Option<PathBuf>,
     protocols: Vec<String>,
+    repeatable_sox: bool,
+    decode_stats: DecodeStats,
+    last_metrics_at: Option<Instant>,
     ignored_streams: HashSet<u64>,
+}
+
+#[derive(Default)]
+struct DecodeStats {
+    recordings_with_pages: u64,
+    recordings_without_pages: u64,
+    decoder_errors: u64,
 }
 
 impl MultimonCapture {
@@ -183,32 +199,79 @@ impl MultimonCapture {
         }
     }
 
-    fn decode(&self, raw_path: &std::path::Path) {
+    fn decode(&mut self, raw_path: &std::path::Path) {
         let Some(executable) = &self.decoder else {
             self.host.error("multimon-ng was not found; raw capture was saved without decoding");
+            self.decode_stats.decoder_errors += 1;
+            self.report_metrics(false);
             return;
         };
         let output_path = raw_path.with_extension("multimon.txt");
         let error_path = raw_path.with_extension("multimon.log");
-        let result = (|| -> io::Result<()> {
-            let mut command = Command::new(executable);
-            command.arg("-t").arg("raw").arg("-f").arg("alpha");
-            for protocol in &self.protocols {
-                command.arg("-a").arg(protocol);
-            }
-            let output = command.arg(raw_path).output()?;
+        let protocols = self.protocols.clone();
+        let repeatable_sox = self.repeatable_sox;
+        let result = (|| -> io::Result<bool> {
+            let output = decoder_command(executable, raw_path, &protocols, repeatable_sox).output()?;
+            let has_page = has_decoded_payload(&output.stdout);
             fs::write(&output_path, output.stdout)?;
             fs::write(&error_path, &output.stderr)?;
             if !output.status.success() {
                 return Err(io::Error::other(format!("multimon-ng exited with {}", output.status)));
             }
-            Ok(())
+            Ok(has_page)
         })();
         match result {
-            Ok(()) => self.host.info(format!("Decoded capture to {}", output_path.display())),
-            Err(e) => self.host.error(format!("Could not decode {}: {e}", raw_path.display())),
+            Ok(true) => {
+                self.decode_stats.recordings_with_pages += 1;
+                self.host.info(format!("Decoded capture to {}", output_path.display()));
+            }
+            Ok(false) => {
+                self.decode_stats.recordings_without_pages += 1;
+                self.host.info(format!("No page output in {}", output_path.display()));
+            }
+            Err(e) => {
+                self.decode_stats.decoder_errors += 1;
+                self.host.error(format!("Could not decode {}: {e}", raw_path.display()));
+            }
         }
+        self.report_metrics(false);
     }
+
+    fn report_metrics(&mut self, force: bool) {
+        let now = Instant::now();
+        if !force && self.last_metrics_at.is_some_and(|last| now.duration_since(last) < Duration::from_secs(2)) {
+            return;
+        }
+        self.host.metrics(&Metrics {
+            extra: BTreeMap::from([
+                ("Decoded recordings".into(), json!(self.decode_stats.recordings_with_pages)),
+                ("No page output".into(), json!(self.decode_stats.recordings_without_pages)),
+                ("Decoder errors".into(), json!(self.decode_stats.decoder_errors)),
+            ]),
+            ..Metrics::default()
+        });
+        self.last_metrics_at = Some(now);
+    }
+}
+
+fn decoder_command(executable: &std::path::Path, raw_path: &std::path::Path, protocols: &[String], repeatable_sox: bool) -> Command {
+    let mut command = Command::new(executable);
+    if repeatable_sox {
+        command.arg("-r");
+    }
+    command.arg("-t").arg("raw").arg("-f").arg("alpha");
+    for protocol in protocols {
+        command.arg("-a").arg(protocol);
+    }
+    command.arg(raw_path);
+    command
+}
+
+fn has_decoded_payload(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output).lines().any(|line| {
+        let line = line.trim_matches(|c: char| c.is_whitespace() || c == '\u{4}');
+        !line.is_empty() && !line.starts_with("Enabled demodulators:")
+    })
 }
 
 fn talkgroup_passes(filter: Option<&TalkgroupFilter>, talkgroup: Option<u32>) -> bool {
@@ -326,7 +389,18 @@ impl Plugin for MultimonCapture {
         }
         host.info(format!("Saving selected FM discriminator streams as S16LE mono, {SAMPLE_RATE} Hz in {}", output_dir.display()));
 
-        Ok(Self { host, output_dir, streams: HashMap::new(), filters, decoder, protocols: setup.config.protocols, ignored_streams: HashSet::new() })
+        Ok(Self {
+            host,
+            output_dir,
+            streams: HashMap::new(),
+            filters,
+            decoder,
+            protocols: setup.config.protocols,
+            repeatable_sox: setup.config.repeatable_sox,
+            decode_stats: DecodeStats::default(),
+            last_metrics_at: None,
+            ignored_streams: HashSet::new(),
+        })
     }
 
     fn tap(&mut self, chunk: TapChunk) {
@@ -342,6 +416,7 @@ impl Plugin for MultimonCapture {
                 Err(e) => self.host.error(format!("Could not close stream {id}: {e}")),
             }
         }
+        self.report_metrics(true);
     }
 }
 
@@ -358,6 +433,35 @@ mod tests {
         assert_eq!(safe_component("Halton Fire/EMS"), "Halton_Fire_EMS");
         assert_eq!(safe_component(""), "unknown-system");
         assert_eq!(safe_component("site_1-west"), "site_1-west");
+    }
+
+    #[test]
+    fn repeatable_sox_defaults_on_and_can_be_disabled() {
+        assert!(Config::default().repeatable_sox);
+        let disabled: Config = serde_json::from_value(json!({ "repeatableSox": false })).unwrap();
+        assert!(!disabled.repeatable_sox);
+    }
+
+    #[test]
+    fn decoder_command_adds_repeatable_flag_only_when_enabled() {
+        let executable = PathBuf::from("multimon-ng");
+        let raw_path = PathBuf::from("capture.raw");
+        let protocols = vec!["POCSAG512".to_string(), "FLEX".to_string()];
+        let args = |enabled| {
+            decoder_command(&executable, &raw_path, &protocols, enabled)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(args(true), ["-r", "-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
+        assert_eq!(args(false), ["-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
+    }
+
+    #[test]
+    fn decode_output_requires_payload_beyond_the_header() {
+        assert!(!has_decoded_payload(b"Enabled demodulators: POCSAG512 FLEX\n"));
+        assert!(has_decoded_payload(b"Enabled demodulators: POCSAG512 FLEX\nPOCSAG512: Address: 160113 Alpha: TEST\x04\n"));
+        assert!(!has_decoded_payload(b"\n  Enabled demodulators: POCSAG512 FLEX \x04\n"));
     }
 
     #[test]

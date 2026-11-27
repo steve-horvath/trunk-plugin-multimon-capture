@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1]
+
+- Add a `repeatableSox` setting, enabled by default, that passes `-r` to multimon-ng.
+- Report completed recordings with decoded page output, no-page recordings, and decoder errors as custom plugin metrics.
+
 ## [0.2.0]
 
 - Renamed the plugin display name to Multimon-ng Decode.
