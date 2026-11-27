@@ -4,8 +4,8 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{self, BufWriter, Write},
-    process::Command,
     path::PathBuf,
+    process::Command,
 };
 
 use schemars::JsonSchema;
@@ -133,7 +133,9 @@ impl MultimonCapture {
                 return;
             }
         } else if self.ignored_streams.contains(&chunk.stream) {
-            if chunk.last { self.ignored_streams.remove(&chunk.stream); }
+            if chunk.last {
+                self.ignored_streams.remove(&chunk.stream);
+            }
             return;
         }
         if chunk.first {
@@ -191,7 +193,9 @@ impl MultimonCapture {
         let result = (|| -> io::Result<()> {
             let mut command = Command::new(executable);
             command.arg("-t").arg("raw").arg("-f").arg("alpha");
-            for protocol in &self.protocols { command.arg("-a").arg(protocol); }
+            for protocol in &self.protocols {
+                command.arg("-a").arg(protocol);
+            }
             let output = command.arg(raw_path).output()?;
             fs::write(&output_path, output.stdout)?;
             fs::write(&error_path, &output.stderr)?;
@@ -220,15 +224,19 @@ fn find_decoder(configured: &str) -> Option<PathBuf> {
         if let Some(parent) = current.parent() {
             for name in ["multimon-ng", "multimon-ng.exe"] {
                 let path = parent.join(name);
-                if path.is_file() { return Some(path); }
+                if path.is_file() {
+                    return Some(path);
+                }
             }
         }
     }
-    #[cfg(windows)] let names = ["multimon-ng.exe"];
-    #[cfg(not(windows))] let names = ["multimon-ng"];
-    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths)
-        .flat_map(|dir| names.iter().map(move |name| dir.join(name)).collect::<Vec<_>>())
-        .find(|path| path.is_file()))
+    #[cfg(windows)]
+    let names = ["multimon-ng.exe"];
+    #[cfg(not(windows))]
+    let names = ["multimon-ng"];
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).flat_map(|dir| names.iter().map(move |name| dir.join(name)).collect::<Vec<_>>()).find(|path| path.is_file())
+    })
 }
 
 fn write_chunk_files(stream: &mut CapturedStream, chunk: &TapChunk) -> io::Result<()> {
