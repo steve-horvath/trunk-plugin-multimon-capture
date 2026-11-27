@@ -46,7 +46,7 @@ jobs:
       - name: Build multimon-ng for Windows
         run: |
           git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
-          cmake -S multimon-ng-source -B multimon-ng-source/build -DCMAKE_TOOLCHAIN_FILE=multimon-ng-source/cmake/toolchain-mingw64.cmake -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DCMAKE_TOOLCHAIN_FILE="$PWD/multimon-ng-source/cmake/toolchain-mingw64.cmake" -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
           cmake --build multimon-ng-source/build --target multimon-ng --parallel
           test -s multimon-ng-source/build/multimon-ng.exe
           mkdir -p windows-decoder
