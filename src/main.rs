@@ -129,12 +129,12 @@ impl MultimonCapture {
             return;
         }
 
-        if chunk.last {
-            if let Some(stream) = self.streams.remove(&chunk.stream) {
-                match finish_stream(stream) {
-                    Ok(path) => self.host.info(format!("Finished discriminator capture: {}", path.display())),
-                    Err(e) => self.host.error(format!("Could not finish stream {}: {e}", chunk.stream)),
-                }
+        if chunk.last
+            && let Some(stream) = self.streams.remove(&chunk.stream)
+        {
+            match finish_stream(stream) {
+                Ok(path) => self.host.info(format!("Finished discriminator capture: {}", path.display())),
+                Err(e) => self.host.error(format!("Could not finish stream: {e}")),
             }
         }
     }
