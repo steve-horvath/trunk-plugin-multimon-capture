@@ -1,8 +1,8 @@
 [package]
 name = "trunk-plugin-multimon-capture"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Captures Trunk Recorder Pro FM discriminator taps as raw audio for pager decoders such as multimon-ng."
+description = "Captures selected Trunk Recorder Pro FM discriminator taps and decodes completed transmissions with multimon-ng."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/steve-horvath/trunk-plugin-multimon-capture"
 authors = ["Steve Horvath"]

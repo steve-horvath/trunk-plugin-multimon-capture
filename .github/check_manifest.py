@@ -12,6 +12,8 @@ if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", m.get("id", "")):
     problems.append("id: lowercase letters, digits and dashes (2-41 characters)")
 if not m.get("name"):
     problems.append("name: set a display name in manifest()")
+elif m["name"] != "Multimon-ng Decode":
+    problems.append("name: must be Multimon-ng Decode")
 if not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", m.get("version", "")):
     problems.append("version: semver (from Cargo.toml)")
 if not m.get("description"):
@@ -20,6 +22,13 @@ if not m.get("repository") or (release and "YOUR-NAME" in m["repository"]):
     problems.append("repository: your plugin's GitHub URL, in Cargo.toml")
 if not m.get("subscribe"):
     problems.append("subscribe: a plugin that subscribes to nothing never hears anything")
+if "tap.fm.discriminator" not in m.get("subscribe", []):
+    problems.append("subscribe: must include tap.fm.discriminator")
+system_config = m.get("system_config", {})
+properties = system_config.get("properties", {}) if isinstance(system_config, dict) else {}
+for field in ("talkgroupMode", "talkgroupAllow", "talkgroupDeny"):
+    if field not in properties:
+        problems.append(f"system_config: missing Talkgroups field {field}")
 known = {"call.start", "call.end", "call.concluded", "unit", "audio", "status", "tap.fm.discriminator"}
 for t in m.get("subscribe", []):
     if t not in known:

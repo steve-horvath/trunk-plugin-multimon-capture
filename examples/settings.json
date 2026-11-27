@@ -1,5 +1,12 @@
 {
   "config": {
-    "outputDirectory": "/home/steve/HALTON/pocsag/raw"
+    "outputDirectory": "/home/steve/HALTON/pocsag/raw",
+    "protocols": ["POCSAG512", "POCSAG1200", "POCSAG2400", "FLEX"]
+  },
+  "systems": {
+    "halton": {
+      "talkgroupMode": "only",
+      "talkgroupAllow": ["101", "200-220"]
+    }
   }
 }

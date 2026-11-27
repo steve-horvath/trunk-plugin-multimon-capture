@@ -43,7 +43,7 @@ jobs:
         include:
           # Linux against glibc 2.28, so it runs on any distribution since ~2019 (as the recorder does).
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
           # One binary for Apple silicon and Intel.
           - { target: universal-apple-darwin, os: macos-15 }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
@@ -83,6 +83,41 @@ jobs:
           cargo build --locked --release --target ${{ matrix.target }}
           echo "BIN=target/${{ matrix.target }}/release/$ID.exe" >> "$GITHUB_ENV"
 
+      - name: Build bundled multimon-ng (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_EXE_LINKER_FLAGS=-static
+          cmake --build multimon-ng-source/build --parallel
+          cp multimon-ng-source/build/multimon-ng ./multimon-ng
+
+      - name: Build bundled multimon-ng (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build-arm -DCMAKE_OSX_ARCHITECTURES=arm64 -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF
+          cmake --build multimon-ng-source/build-arm --parallel
+          cmake -S multimon-ng-source -B multimon-ng-source/build-x64 -DCMAKE_OSX_ARCHITECTURES=x86_64 -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF
+          cmake --build multimon-ng-source/build-x64 --parallel
+          lipo -create -output multimon-ng multimon-ng-source/build-arm/multimon-ng multimon-ng-source/build-x64/multimon-ng
+
+      - name: Build bundled multimon-ng (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 1.6.1 https://github.com/EliasOenal/multimon-ng.git multimon-ng-source
+          cmake -S multimon-ng-source -B multimon-ng-source/build -DPULSE_AUDIO_SUPPORT=OFF -DX11_SUPPORT=OFF -DSDL3_SCOPE=OFF -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          cmake --build multimon-ng-source/build --config Release --parallel
+          Copy-Item multimon-ng-source/build/Release/multimon-ng.exe ./multimon-ng.exe
+
+      - name: Prepare multimon-ng source offer
+        shell: bash
+        run: tar -C multimon-ng-source --exclude=build --exclude='build-*' -czf multimon-ng-1.6.1-source.tar.gz .
+
       - name: It runs, and says who it is
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
@@ -95,7 +130,8 @@ jobs:
         run: |
           name="$ID-$VERSION-${{ matrix.target }}"
           mkdir -p "pkg/$name" dist
-          cp "$BIN" README.md LICENSE "pkg/$name/"
+          cp "$BIN" multimon-ng-1.6.1-source.tar.gz README.md LICENSE "pkg/$name/"
+          if [ "$RUNNER_OS" = Windows ]; then cp multimon-ng.exe "pkg/$name/"; else cp multimon-ng "pkg/$name/"; fi
           if [ "$RUNNER_OS" = Windows ]; then
             (cd pkg && 7z a -tzip "../dist/$name.zip" "$name" >/dev/null)
           else
