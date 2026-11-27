@@ -447,12 +447,8 @@ mod tests {
         let executable = PathBuf::from("multimon-ng");
         let raw_path = PathBuf::from("capture.raw");
         let protocols = vec!["POCSAG512".to_string(), "FLEX".to_string()];
-        let args = |enabled| {
-            decoder_command(&executable, &raw_path, &protocols, enabled)
-                .get_args()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-        };
+        let args =
+            |enabled| decoder_command(&executable, &raw_path, &protocols, enabled).get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
         assert_eq!(args(true), ["-r", "-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
         assert_eq!(args(false), ["-t", "raw", "-f", "alpha", "-a", "POCSAG512", "-a", "FLEX", "capture.raw"]);
     }
